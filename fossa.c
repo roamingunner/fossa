@@ -101,6 +101,61 @@ extern void *(*test_calloc)(size_t, size_t);
 #line 1 "src/../../common/mbuf.c"
 /**/
 #endif
+
+
+int ns_register_timeout(unsigned int secs, unsigned int usecs,
+			   ns_timeout_handler_t handler,
+			   struct ns_mgr *mgr, void *ctx)
+{
+	struct ns_timeout *timeout, *tmp;
+	ns_time_t now_sec;
+
+	timeout = NS_MALLOC(sizeof(*timeout));
+	if (timeout == NULL)
+		return -1;
+	if (ns_get_reltime(&timeout->time) < 0) {
+		NS_FREE(timeout);
+		return -1;
+	}
+	now_sec = timeout->time.sec;
+	timeout->time.sec += secs;
+	if (timeout->time.sec < now_sec) {
+		/*
+		 * Integer overflow - assume long enough timeout to be assumed
+		 * to be infinite, i.e., the timeout would never happen.
+		 */
+		DBG(("ELOOP: Too long timeout (secs=%u) to "
+			   "ever happen - ignore it", secs));
+		NS_FREE(timeout);
+		return 0;
+	}
+	timeout->time.usec += usecs;
+	while (timeout->time.usec >= 1000000) {
+		timeout->time.sec++;
+		timeout->time.usec -= 1000000;
+	}
+	timeout->ctx = ctx;
+	timeout->handler = handler;
+
+	/* Maintain timeouts in order of increasing time */
+	dl_list_for_each(tmp, &mgr->timeout, struct ns_timeout, list) {
+		if (ns_reltime_before(&timeout->time, &tmp->time)) {
+			dl_list_add(tmp->list.prev, &timeout->list);
+			return 0;
+		}
+	}
+	dl_list_add_tail(&mgr->timeout, &timeout->list);
+
+	return 0;
+
+}
+
+void ns_remove_timeout(struct ns_timeout *timeout)
+{
+	dl_list_del(&timeout->list);
+	NS_FREE(timeout);
+}
+
 /*
  * Copyright (c) 2014 Cesanta Software Limited
  * All rights reserved
@@ -1739,12 +1794,15 @@ void ns_mgr_init(struct ns_mgr *s, void *user_data) {
   }
 #endif
   ns_ev_mgr_init(s);
+  dl_list_init(&s->timeout);
   DBG(("=================================="));
   DBG(("init mgr=%p", s));
 }
 
 void ns_mgr_free(struct ns_mgr *s) {
   struct ns_connection *conn, *tmp_conn;
+	struct ns_timeout *timeout, *prev;
+	struct ns_reltime now;
 
   DBG(("%p", s));
   if (s == NULL) return;
@@ -1759,6 +1817,24 @@ void ns_mgr_free(struct ns_mgr *s) {
     tmp_conn = conn->next;
     ns_close_conn(conn);
   }
+
+
+	ns_get_reltime(&now);
+	dl_list_for_each_safe(timeout, prev, &s->timeout,
+				  struct ns_timeout, list) {
+		int sec, usec;
+		sec = timeout->time.sec - now.sec;
+		usec = timeout->time.usec - now.usec;
+		if (timeout->time.usec < now.usec) {
+			sec--;
+			usec += 1000000;
+		}
+		DBG(("ns: remaining timeout: %d.%06d "
+			   "mgr_data=%p user_data=%p handler=%p",
+			   sec, usec, timeout->mgr_data, timeout->user_data,
+			   timeout->handler));
+		ns_remove_timeout(timeout);
+	}
 
   ns_ev_mgr_free(s);
 }
@@ -2723,6 +2799,44 @@ time_t ns_mgr_poll(struct ns_mgr *mgr, int milli) {
 }
 
 #endif
+
+int ns_mgr_poll_loop(struct ns_mgr *mgr) {
+	struct ns_reltime tv, now;
+	int timeout_ms = 0;
+	struct ns_timeout *timeout;
+
+	while (!mgr->terminate){
+		timeout = dl_list_first(&mgr->timeout, struct ns_timeout, list);
+		if (timeout) {
+			ns_get_reltime(&now);
+			if (ns_reltime_before(&now, &timeout->time))
+				ns_reltime_sub(&timeout->time, &now, &tv);
+			else
+				tv.sec = tv.usec = 0;
+			timeout_ms = tv.sec * 1000 + tv.usec / 1000;
+		}
+		ns_mgr_poll(mgr, timeout_ms);
+
+		/*
+		 *ns_process_pending_signals();
+		 */
+
+		/* check if some registered timeouts have occurred */
+		timeout = dl_list_first(&mgr->timeout, struct ns_timeout, list);
+		if (timeout) {
+			ns_get_reltime(&now);
+			if (!ns_reltime_before(&now, &timeout->time)) {
+				void *ctx = timeout->ctx;
+				ns_timeout_handler_t handler =
+					timeout->handler;
+				ns_remove_timeout(timeout);
+				handler(mgr, ctx);
+			}
+		}
+
+	}
+	return 0;
+}
 
 /*
  * Schedules an async connect for a resolved address and proto.

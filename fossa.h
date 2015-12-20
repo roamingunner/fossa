@@ -234,6 +234,247 @@ int64_t strtoll(const char *str, char **endptr, int base);
 #endif
 
 #endif /* OSDEP_HEADER_INCLUDED */
+
+
+/*
+ * Add by roamingunner
+ * double link list
+ */
+
+#ifndef LIST_H
+#define LIST_H
+
+/**
+ * struct dl_list - Doubly-linked list
+ */
+struct dl_list {
+	struct dl_list *next;
+	struct dl_list *prev;
+};
+
+#define DL_LIST_HEAD_INIT(l) { &(l), &(l) }
+
+static inline void dl_list_init(struct dl_list *list)
+{
+	list->next = list;
+	list->prev = list;
+}
+
+static inline void dl_list_add(struct dl_list *list, struct dl_list *item)
+{
+	item->next = list->next;
+	item->prev = list;
+	list->next->prev = item;
+	list->next = item;
+}
+
+static inline void dl_list_add_tail(struct dl_list *list, struct dl_list *item)
+{
+	dl_list_add(list->prev, item);
+}
+
+static inline void dl_list_del(struct dl_list *item)
+{
+	item->next->prev = item->prev;
+	item->prev->next = item->next;
+	item->next = NULL;
+	item->prev = NULL;
+}
+
+static inline int dl_list_empty(struct dl_list *list)
+{
+	return list->next == list;
+}
+
+static inline unsigned int dl_list_len(struct dl_list *list)
+{
+	struct dl_list *item;
+	int count = 0;
+	for (item = list->next; item != list; item = item->next)
+		count++;
+	return count;
+}
+
+#ifndef offsetof
+#define offsetof(type, member) ((long) &((type *) 0)->member)
+#endif
+
+#define dl_list_entry(item, type, member) \
+	((type *) ((char *) item - offsetof(type, member)))
+
+#define dl_list_first(list, type, member) \
+	(dl_list_empty((list)) ? NULL : \
+	 dl_list_entry((list)->next, type, member))
+
+#define dl_list_last(list, type, member) \
+	(dl_list_empty((list)) ? NULL : \
+	 dl_list_entry((list)->prev, type, member))
+
+#define dl_list_for_each(item, list, type, member) \
+	for (item = dl_list_entry((list)->next, type, member); \
+	     &item->member != (list); \
+	     item = dl_list_entry(item->member.next, type, member))
+
+#define dl_list_for_each_safe(item, n, list, type, member) \
+	for (item = dl_list_entry((list)->next, type, member), \
+		     n = dl_list_entry(item->member.next, type, member); \
+	     &item->member != (list); \
+	     item = n, n = dl_list_entry(n->member.next, type, member))
+
+#define dl_list_for_each_reverse(item, list, type, member) \
+	for (item = dl_list_entry((list)->prev, type, member); \
+	     &item->member != (list); \
+	     item = dl_list_entry(item->member.prev, type, member))
+
+#define DEFINE_DL_LIST(name) \
+	struct dl_list name = { &(name), &(name) }
+
+#endif /* LIST_H */
+
+
+#ifndef NS_TIME_H
+#define NS_TIME_H
+#include <sys/time.h>
+typedef long ns_time_t;
+
+struct ns_time {
+	ns_time_t sec;
+	ns_time_t usec;
+};
+
+struct ns_reltime {
+	ns_time_t sec;
+	ns_time_t usec;
+};
+
+/**
+ * ns_get_time - Get current time (sec, usec)
+ * @t: Pointer to buffer for the time
+ * Returns: 0 on success, -1 on failure
+ */
+static inline int ns_get_time(struct ns_time *t)
+{
+	int res;
+	struct timeval tv;
+	res = gettimeofday(&tv, NULL);
+	t->sec = tv.tv_sec;
+	t->usec = tv.tv_usec;
+	return res;
+}
+
+/**
+ * ns_get_reltime - Get relative time (sec, usec)
+ * @t: Pointer to buffer for the time
+ * Returns: 0 on success, -1 on failure
+ */
+static inline int ns_get_reltime(struct ns_reltime *t)
+{
+#if defined(CLOCK_BOOTTIME)
+	static clockid_t clock_id = CLOCK_BOOTTIME;
+#elif defined(CLOCK_MONOTONIC)
+	static clockid_t clock_id = CLOCK_MONOTONIC;
+#else
+	static clockid_t clock_id = CLOCK_REALTIME;
+#endif
+	struct timespec ts;
+	int res;
+
+	while (1) {
+		res = clock_gettime(clock_id, &ts);
+		if (res == 0) {
+			t->sec = ts.tv_sec;
+			t->usec = ts.tv_nsec / 1000;
+			return 0;
+		}
+		switch (clock_id) {
+#ifdef CLOCK_BOOTTIME
+		case CLOCK_BOOTTIME:
+			clock_id = CLOCK_MONOTONIC;
+			break;
+#endif
+#ifdef CLOCK_MONOTONIC
+		case CLOCK_MONOTONIC:
+			clock_id = CLOCK_REALTIME;
+			break;
+#endif
+		case CLOCK_REALTIME:
+			return -1;
+		}
+	}
+}
+
+/* Helpers for handling struct ns_time */
+
+static inline int ns_time_before(struct ns_time *a, struct ns_time *b)
+{
+	return (a->sec < b->sec) ||
+	       (a->sec == b->sec && a->usec < b->usec);
+}
+
+
+static inline void ns_time_sub(struct ns_time *a, struct ns_time *b,
+			       struct ns_time *res)
+{
+	res->sec = a->sec - b->sec;
+	res->usec = a->usec - b->usec;
+	if (res->usec < 0) {
+		res->sec--;
+		res->usec += 1000000;
+	}
+}
+
+
+/* Helpers for handling struct ns_reltime */
+
+static inline int ns_reltime_before(struct ns_reltime *a,
+				    struct ns_reltime *b)
+{
+	return (a->sec < b->sec) ||
+	       (a->sec == b->sec && a->usec < b->usec);
+}
+
+
+static inline void ns_reltime_sub(struct ns_reltime *a, struct ns_reltime *b,
+				  struct ns_reltime *res)
+{
+	res->sec = a->sec - b->sec;
+	res->usec = a->usec - b->usec;
+	if (res->usec < 0) {
+		res->sec--;
+		res->usec += 1000000;
+	}
+}
+
+
+static inline void ns_reltime_age(struct ns_reltime *start,
+				  struct ns_reltime *age)
+{
+	struct ns_reltime now;
+
+	ns_get_reltime(&now);
+	ns_reltime_sub(&now, start, age);
+}
+
+
+static inline int ns_reltime_expired(struct ns_reltime *now,
+				     struct ns_reltime *ts,
+				     ns_time_t timeout_secs)
+{
+	struct ns_reltime age;
+
+	ns_reltime_sub(now, ts, &age);
+	return (age.sec > timeout_secs) ||
+	       (age.sec == timeout_secs && age.usec > 0);
+}
+
+
+static inline int ns_reltime_initialized(struct ns_reltime *t)
+{
+	return t->sec != 0 || t->usec != 0;
+}
+
+#endif
+
 /*
  * Copyright (c) 2015 Cesanta Software Limited
  * All rights reserved
@@ -557,6 +798,12 @@ struct ns_str {
 struct ns_connection;
 typedef void (*ns_event_handler_t)(struct ns_connection *, int ev, void *);
 
+struct ns_timeout;
+typedef void (*ns_timeout_handler_t)(void *mgr,void *ctx);
+
+struct ns_signal;
+typedef void (*ns_signal_handler_t)(int sig, void *mgr,void *ctx);
+
 /* Events. Meaning of event parameter (evp) is given in the comment. */
 #define NS_POLL 0    /* Sent to each connection on each ns_mgr_poll() call */
 #define NS_ACCEPT 1  /* New connection accepted. union socket_address *addr */
@@ -572,8 +819,32 @@ struct ns_mgr {
   struct ns_connection *active_connections;
   const char *hexdump_file; /* Debug hexdump file path */
   sock_t ctl[2];            /* Socketpair for mg_wakeup() */
+  struct dl_list timeout;   /* timeout handle */
+  int terminate;
   void *user_data;          /* User data */
   void *mgr_data;           /* Implementation-specific event manager's data. */
+};
+
+/*
+ *Timeout
+ */
+struct ns_timeout{
+	struct dl_list list;
+	struct ns_reltime time;
+	void *ctx;                  /* User-specific data */
+	ns_timeout_handler_t handler;
+};
+
+
+/*
+ *Signal
+ */
+struct ns_signal{
+	int sig;
+	void *ctx;                  /* User-specific data */
+	struct ns_mgr *mgr;
+	ns_signal_handler_t handler;
+	int signaled;
 };
 
 /*
