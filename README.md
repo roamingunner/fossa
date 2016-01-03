@@ -60,3 +60,10 @@ Fossa is released under
 [GNU GPL v.2](http://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
 Businesses have an option to get non-restrictive, royalty-free commercial
 license and professional support from [Cesanta](https://www.cesanta.com).
+
+## Todo List
+
+* Add signal hooks handler
+* Add timeout unit test
+* Add file aio hooks
+
