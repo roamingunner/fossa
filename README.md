@@ -1,6 +1,7 @@
 # Fossa: Multi-Protocol Networking Library
 
 ![](https://img.shields.io/badge/license-GPL_2-green.svg "License")
+[![Code Climate](https://codeclimate.com/github/roamingunner/fossa/badges/gpa.svg)](https://codeclimate.com/github/roamingunner/fossa)
 
 [Fossa](https://www.cesanta.com/fossa) is a
 multi-protocol networking library written in C.
