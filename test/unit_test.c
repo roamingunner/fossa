@@ -2686,7 +2686,8 @@ static void dns_resolve_cb(struct ns_dns_message *msg, void *data) {
    * We saw cases when A query returns only A record, or A and CNAME records.
    * Expect A answer, and optionally CNAME answer.
    */
-  if (want_addr == got_addr.s_addr || strcmp(cname, "dev.cesanta.com") == 0) {
+  if (want_addr == got_addr.s_addr || strcmp(cname, "dev.cesanta.com") == 0 ||
+    strcmp(cname, "ghs.googlehosted.com") == 0) {
     *(int *) data = 1; /* Success */
   } else {
     *(int *) data = 2; /* Error */
@@ -3215,11 +3216,11 @@ static const char *run_tests(const char *filter, double *total_elapsed) {
 #ifdef NS_ENABLE_DNS_SERVER
   RUN_TEST(test_dns_server);
 #endif
-  /* RUN_TEST(test_dns_resolve); */
+  RUN_TEST(test_dns_resolve);
   RUN_TEST(test_dns_resolve_timeout);
   RUN_TEST(test_dns_resolve_hosts);
   RUN_TEST(test_buffer_limit);
-  /* RUN_TEST(test_connection_errors); */
+  RUN_TEST(test_connection_errors);
   RUN_TEST(test_connect_fail);
 #ifndef NO_DNS_TEST
   RUN_TEST(test_resolve);
