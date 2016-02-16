@@ -103,7 +103,7 @@ extern void *(*test_calloc)(size_t, size_t);
 #endif
 
 
-int ns_register_timeout(unsigned int secs, unsigned int usecs,
+struct ns_timeout *ns_register_timeout(unsigned int secs, unsigned int usecs,
 			   ns_timeout_handler_t handler,
 			   struct ns_mgr *mgr, void *ctx)
 {
@@ -112,10 +112,10 @@ int ns_register_timeout(unsigned int secs, unsigned int usecs,
 
 	timeout = NS_MALLOC(sizeof(*timeout));
 	if (timeout == NULL)
-		return -1;
+		return NULL;
 	if (ns_get_reltime(&timeout->time) < 0) {
 		NS_FREE(timeout);
-		return -1;
+		return NULL;
 	}
 	now_sec = timeout->time.sec;
 	timeout->time.sec += secs;
@@ -141,12 +141,12 @@ int ns_register_timeout(unsigned int secs, unsigned int usecs,
 	dl_list_for_each(tmp, &mgr->timeout, struct ns_timeout, list) {
 		if (ns_reltime_before(&timeout->time, &tmp->time)) {
 			dl_list_add(tmp->list.prev, &timeout->list);
-			return 0;
+			return timeout;
 		}
 	}
 	dl_list_add_tail(&mgr->timeout, &timeout->list);
 
-	return 0;
+	return timeout;
 
 }
 
@@ -1766,6 +1766,7 @@ void ns_mgr_init(struct ns_mgr *s, void *user_data) {
   memset(s, 0, sizeof(*s));
   s->ctl[0] = s->ctl[1] = INVALID_SOCKET;
   s->user_data = user_data;
+  s->terminate = 0;
 
 #ifdef _WIN32
   {
@@ -1807,6 +1808,7 @@ void ns_mgr_free(struct ns_mgr *s) {
   DBG(("%p", s));
   if (s == NULL) return;
   /* Do one last poll, see https://github.com/cesanta/mongoose/issues/286 */
+  s->terminate = 1;
   ns_mgr_poll(s, 0);
 
   if (s->ctl[0] != INVALID_SOCKET) closesocket(s->ctl[0]);
@@ -2800,7 +2802,7 @@ time_t ns_mgr_poll(struct ns_mgr *mgr, int milli) {
 
 #endif
 
-int ns_mgr_poll_loop(struct ns_mgr *mgr) {
+void ns_mgr_poll_loop(struct ns_mgr *mgr) {
 	struct ns_reltime tv, now;
 	int timeout_ms = 0;
 	struct ns_timeout *timeout;
@@ -2835,7 +2837,7 @@ int ns_mgr_poll_loop(struct ns_mgr *mgr) {
 		}
 
 	}
-	return 0;
+	return ;
 }
 
 /*

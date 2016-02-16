@@ -798,11 +798,6 @@ struct ns_str {
 struct ns_connection;
 typedef void (*ns_event_handler_t)(struct ns_connection *, int ev, void *);
 
-struct ns_timeout;
-typedef void (*ns_timeout_handler_t)(void *mgr,void *ctx);
-
-struct ns_signal;
-typedef void (*ns_signal_handler_t)(int sig, void *mgr,void *ctx);
 
 /* Events. Meaning of event parameter (evp) is given in the comment. */
 #define NS_POLL 0    /* Sent to each connection on each ns_mgr_poll() call */
@@ -824,6 +819,12 @@ struct ns_mgr {
   void *user_data;          /* User data */
   void *mgr_data;           /* Implementation-specific event manager's data. */
 };
+
+struct ns_timeout;
+typedef void (*ns_timeout_handler_t)(struct ns_mgr *mgr,void *ctx);
+
+struct ns_signal;
+typedef void (*ns_signal_handler_t)(int sig, struct ns_mgr *mgr,void *ctx);
 
 /*
  *Timeout
@@ -921,6 +922,25 @@ void ns_mgr_free(struct ns_mgr *);
  * event handlers and returns.
  */
 time_t ns_mgr_poll(struct ns_mgr *, int milli);
+
+/*
+ * This function performs the actual IO.
+ * It will stop when mgr->terminate is true.
+ */
+void ns_mgr_poll_loop(struct ns_mgr *);
+
+
+/*
+ * register timer for mgr_poll_loop. handler will be invoked when it's timeout.
+ */
+struct ns_timeout *ns_register_timeout(unsigned int secs, unsigned int usecs,
+			   ns_timeout_handler_t handler,
+			   struct ns_mgr *mgr, void *ctx);
+
+/*
+ * cancel registered timer for mgr_poll_loop
+ */
+void ns_remove_timeout(struct ns_timeout *timeout);
 
 /*
  * Pass a message of a given length to all connections.

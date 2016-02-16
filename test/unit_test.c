@@ -3163,6 +3163,77 @@ static const char *test_strcmp(void) {
   return NULL;
 }
 
+static void ns_timeout_cb(struct ns_mgr *mgr, void *ctx) {
+  struct ns_reltime *now  = (struct ns_reltime *)ctx;
+  ns_get_reltime(now);
+  mgr->terminate = 1;
+  return;
+}
+
+static const char *test_ns_timeout(void){
+  struct ns_mgr mgr;
+  struct ns_reltime start,end,diff;
+  int pass = 0;
+  ns_mgr_init(&mgr, NULL);
+  ns_get_reltime(&start);
+
+  ns_register_timeout(1,500000,ns_timeout_cb,&mgr,(void *)&end);
+
+  ns_mgr_poll_loop(&mgr);
+  ns_reltime_sub(&end,&start,&diff);
+
+  if (diff.sec == 1 && (diff.usec < 510000 || diff.usec > 490000)){
+      pass = 1;
+  }
+  ASSERT_EQ(pass, 1);
+  ns_mgr_free(&mgr);
+
+  return NULL;
+}
+
+static void ns_timeout_cancel_cb1(struct ns_mgr *mgr, void *ctx) {
+  struct ns_reltime *now  = (struct ns_reltime *)ctx;
+  ns_get_reltime(now);
+  return;
+}
+
+static void ns_timeout_cancel_cb2(struct ns_mgr *mgr, void *ctx) {
+  struct ns_reltime *now  = (struct ns_reltime *)ctx;
+  ns_get_reltime(now);
+  mgr->terminate = 1;
+  return;
+}
+
+static const char *test_ns_timeout_remove(void){
+  struct ns_mgr mgr;
+  struct ns_reltime start,t1,t2,diff;
+  struct ns_timeout *to1;
+  int pass = 0;
+  ns_mgr_init(&mgr, NULL);
+
+  memset(&t1, 0, sizeof(struct ns_reltime));
+  memset(&t2, 0, sizeof(struct ns_reltime));
+
+  ns_get_reltime(&start);
+
+  to1 = ns_register_timeout(0,100000,ns_timeout_cancel_cb1,&mgr,(void *)&t1);
+  ns_register_timeout(0,200000,ns_timeout_cancel_cb2,&mgr,(void *)&t2);
+
+  ns_remove_timeout(to1);
+  ns_mgr_poll_loop(&mgr);
+  ns_reltime_sub(&t2,&start,&diff);
+  if (t1.sec == 0 && t1.usec == 0){
+    if (diff.sec == 0 && (diff.usec < 210000 || diff.usec > 190000)){
+      pass = 1;
+    }
+  }
+
+  ASSERT_EQ(pass, 1);
+  ns_mgr_free(&mgr);
+
+  return NULL;
+}
+
 static const char *run_tests(const char *filter, double *total_elapsed) {
   RUN_TEST(test_mbuf);
   RUN_TEST(test_parse_address);
@@ -3238,6 +3309,8 @@ static const char *run_tests(const char *filter, double *total_elapsed) {
   RUN_TEST(test_coap);
 #endif
   RUN_TEST(test_strcmp);
+  RUN_TEST(test_ns_timeout);
+  RUN_TEST(test_ns_timeout_remove);
   return NULL;
 }
 
