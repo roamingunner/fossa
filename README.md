@@ -63,7 +63,7 @@ license and professional support from [Cesanta](https://www.cesanta.com).
 
 ## Todo List
 
-* Add signal hooks handler
-* Add timeout unit test
 * Add file aio hooks
+* Unix domain socket
+* Add signal hooks handler
 

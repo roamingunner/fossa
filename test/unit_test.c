@@ -14,7 +14,6 @@
  * Alternatively, you can license this software under a commercial
  * license, as set out in <https://www.cesanta.com/license>.
  */
-
 #include "../fossa.h"
 #include "../src/internal.h"
 #include "unit_test.h"
@@ -32,7 +31,6 @@
 
 static const char *s_argv_0 = NULL;
 static struct ns_serve_http_opts s_http_server_opts;
-
 #define TEST_NS_MALLOC malloc
 #define TEST_NS_CALLOC calloc
 
@@ -3234,6 +3232,79 @@ static const char *test_ns_timeout_remove(void){
   return NULL;
 }
 
+#ifdef NS_DEV_IO
+#if NS_MGR_EV_MGR == 0 /* select() */
+
+#define NS_DEV_TEST_MSG  "abcde12345"
+
+static void ns_dev_io_cb(struct ns_dev_io *nd, int ev, void *p)
+{
+    int *data = (int *)nd->ctx;
+    struct mbuf *recv_mbuf = &nd->recv_mbuf;
+    struct mbuf *send_mbuf = &nd->send_mbuf;
+    switch(ev){
+        case NS_DEV_EV_READ:
+            if (!strncmp(recv_mbuf->buf,NS_DEV_TEST_MSG,sizeof(NS_DEV_TEST_MSG) - 1)){
+                *data |= NS_DEV_EV_READ;
+            }
+            break;
+        case NS_DEV_EV_WRITE:
+            if (!send_mbuf->len){
+                *data |= NS_DEV_EV_WRITE;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static const char *test_ns_dev_io(void)
+{
+  int data = 0;
+  struct ns_mgr mgr;
+  struct ns_dev_io *nd = NULL;
+
+  unlink("/tmp/test_fifo");
+  mkfifo("/tmp/test_fifo", 0666);
+
+  ns_mgr_init(&mgr, NULL);
+
+  nd = ns_register_dev_io(&mgr, "/tmp/test_fifo", O_RDWR , ns_dev_io_cb, NS_DEV_EV_READ, &data);
+
+  /* read block */
+  poll_until(&mgr, 500, c_int_ne, &data, (void *) 0);
+  ASSERT_EQ(data, 0);
+
+  /* read data */
+  system("echo abcde12345 > /tmp/test_fifo &");
+  poll_until(&mgr, 1000, c_int_eq, &data, (void *) NS_DEV_EV_READ);
+  ASSERT_EQ(data, NS_DEV_EV_READ);
+
+/*
+ *  data = 0;
+ *
+ *  [> write block <]
+ *  poll_until(&mgr, 500, c_int_ne, &data, (void *) 0);
+ *  ASSERT_EQ(data, 0);
+ *
+ *  [> write data <]
+ *
+ *  system("cat /tmp/test_fifo &");
+ *  mbuf_append(&nd->send_mbuf, NS_DEV_TEST_MSG, sizeof(NS_DEV_TEST_MSG));
+ *  poll_until(&mgr, 500, c_int_eq, &data, (void *) 1);
+ *  ASSERT_EQ(data, 1);
+ */
+
+  ns_mgr_free(&mgr);
+
+  unlink("/tmp/test_fifo");
+
+  return NULL;
+}
+
+#endif
+#endif
+
 static const char *run_tests(const char *filter, double *total_elapsed) {
   RUN_TEST(test_mbuf);
   RUN_TEST(test_parse_address);
@@ -3311,6 +3382,12 @@ static const char *run_tests(const char *filter, double *total_elapsed) {
   RUN_TEST(test_strcmp);
   RUN_TEST(test_ns_timeout);
   RUN_TEST(test_ns_timeout_remove);
+
+#ifdef NS_DEV_IO
+#if NS_MGR_EV_MGR == 0 /* select() */
+  RUN_TEST(test_ns_dev_io);
+#endif
+#endif
   return NULL;
 }
 

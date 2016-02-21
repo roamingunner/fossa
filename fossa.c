@@ -92,6 +92,10 @@ NS_INTERNAL size_t ns_handle_chunked(struct ns_connection *nc,
                                      struct http_message *hm, char *buf,
                                      size_t blen);
 
+#ifdef NS_DEV_IO
+static void ns_mgr_handle_dev_io(struct ns_dev_io *nd, int ev_flags, time_t now);
+#endif
+
 /* Forward declarations for testing. */
 extern void *(*test_malloc)(size_t);
 extern void *(*test_calloc)(size_t, size_t);
@@ -1796,47 +1800,54 @@ void ns_mgr_init(struct ns_mgr *s, void *user_data) {
 #endif
   ns_ev_mgr_init(s);
   dl_list_init(&s->timeout);
+#ifdef NS_DEV_IO
+  dl_list_init(&s->devios);
+#endif
   DBG(("=================================="));
   DBG(("init mgr=%p", s));
 }
 
 void ns_mgr_free(struct ns_mgr *s) {
-  struct ns_connection *conn, *tmp_conn;
-	struct ns_timeout *timeout, *prev;
-	struct ns_reltime now;
+    struct ns_connection *conn, *tmp_conn;
+    struct ns_timeout *timeout, *prev;
+    struct ns_reltime now;
+    struct ns_dev_io *nd, *tmp_nd;
 
-  DBG(("%p", s));
-  if (s == NULL) return;
-  /* Do one last poll, see https://github.com/cesanta/mongoose/issues/286 */
-  s->terminate = 1;
-  ns_mgr_poll(s, 0);
+    DBG(("%p", s));
+    if (s == NULL) return;
+    /* Do one last poll, see https://github.com/cesanta/mongoose/issues/286 */
+    s->terminate = 1;
+    ns_mgr_poll(s, 0);
 
-  if (s->ctl[0] != INVALID_SOCKET) closesocket(s->ctl[0]);
-  if (s->ctl[1] != INVALID_SOCKET) closesocket(s->ctl[1]);
-  s->ctl[0] = s->ctl[1] = INVALID_SOCKET;
+    if (s->ctl[0] != INVALID_SOCKET) closesocket(s->ctl[0]);
+    if (s->ctl[1] != INVALID_SOCKET) closesocket(s->ctl[1]);
+    s->ctl[0] = s->ctl[1] = INVALID_SOCKET;
 
-  for (conn = s->active_connections; conn != NULL; conn = tmp_conn) {
-    tmp_conn = conn->next;
-    ns_close_conn(conn);
-  }
-
-
-	ns_get_reltime(&now);
-	dl_list_for_each_safe(timeout, prev, &s->timeout,
-				  struct ns_timeout, list) {
-		int sec, usec;
-		sec = timeout->time.sec - now.sec;
-		usec = timeout->time.usec - now.usec;
-		if (timeout->time.usec < now.usec) {
-			sec--;
-			usec += 1000000;
-		}
-		DBG(("ns: remaining timeout: %d.%06d "
-			   "mgr_data=%p user_data=%p handler=%p",
-			   sec, usec, timeout->mgr_data, timeout->user_data,
-			   timeout->handler));
-		ns_remove_timeout(timeout);
-	}
+    for (conn = s->active_connections; conn != NULL; conn = tmp_conn) {
+        tmp_conn = conn->next;
+        ns_close_conn(conn);
+    }
+#ifdef NS_DEV_IO
+    dl_list_for_each_safe(nd, tmp_nd, &s->devios, struct ns_dev_io, list){
+        ns_remove_dev_io(nd);
+    }
+#endif
+    ns_get_reltime(&now);
+    dl_list_for_each_safe(timeout, prev, &s->timeout,
+                  struct ns_timeout, list) {
+        int sec, usec;
+        sec = timeout->time.sec - now.sec;
+        usec = timeout->time.usec - now.usec;
+        if (timeout->time.usec < now.usec) {
+            sec--;
+            usec += 1000000;
+        }
+        DBG(("ns: remaining timeout: %d.%06d "
+               "mgr_data=%p user_data=%p handler=%p",
+               sec, usec, timeout->mgr_data, timeout->user_data,
+               timeout->handler));
+        ns_remove_timeout(timeout);
+    }
 
   ns_ev_mgr_free(s);
 }
@@ -2731,113 +2742,144 @@ static void ns_add_to_set(sock_t sock, fd_set *set, sock_t *max_fd) {
 }
 
 time_t ns_mgr_poll(struct ns_mgr *mgr, int milli) {
-  time_t now;
-  struct ns_connection *nc, *tmp;
-  struct timeval tv;
-  fd_set read_set, write_set, err_set;
-  sock_t max_fd = INVALID_SOCKET;
-  int num_selected;
+    time_t now;
+    struct ns_connection *nc, *tmp;
+#ifdef NS_DEV_IO
+    struct ns_dev_io *nd,*ndtmp;
+#endif
+    struct timeval tv;
+    fd_set read_set, write_set, err_set;
+    sock_t max_fd = INVALID_SOCKET;
+    int num_selected;
+    FD_ZERO(&read_set);
+    FD_ZERO(&write_set);
+    FD_ZERO(&err_set);
+    ns_add_to_set(mgr->ctl[1], &read_set, &max_fd);
 
-  FD_ZERO(&read_set);
-  FD_ZERO(&write_set);
-  FD_ZERO(&err_set);
-  ns_add_to_set(mgr->ctl[1], &read_set, &max_fd);
+    for (nc = mgr->active_connections; nc != NULL; nc = tmp) {
+        tmp = nc->next;
 
-  for (nc = mgr->active_connections; nc != NULL; nc = tmp) {
-    tmp = nc->next;
+        if (!(nc->flags & NSF_WANT_WRITE) &&
+                nc->recv_mbuf.len < nc->recv_mbuf_limit) {
+            ns_add_to_set(nc->sock, &read_set, &max_fd);
+        }
 
-    if (!(nc->flags & NSF_WANT_WRITE) &&
-        nc->recv_mbuf.len < nc->recv_mbuf_limit) {
-      ns_add_to_set(nc->sock, &read_set, &max_fd);
+        if (((nc->flags & NSF_CONNECTING) && !(nc->flags & NSF_WANT_READ)) ||
+                (nc->send_mbuf.len > 0 && !(nc->flags & NSF_CONNECTING) &&
+                 !(nc->flags & NSF_DONT_SEND))) {
+            ns_add_to_set(nc->sock, &write_set, &max_fd);
+            ns_add_to_set(nc->sock, &err_set, &max_fd);
+        }
     }
-
-    if (((nc->flags & NSF_CONNECTING) && !(nc->flags & NSF_WANT_READ)) ||
-        (nc->send_mbuf.len > 0 && !(nc->flags & NSF_CONNECTING) &&
-         !(nc->flags & NSF_DONT_SEND))) {
-      ns_add_to_set(nc->sock, &write_set, &max_fd);
-      ns_add_to_set(nc->sock, &err_set, &max_fd);
-    }
-  }
-
-  tv.tv_sec = milli / 1000;
-  tv.tv_usec = (milli % 1000) * 1000;
-
-  num_selected = select((int) max_fd + 1, &read_set, &write_set, &err_set, &tv);
-  now = time(NULL);
-  DBG(("select @ %ld num_ev=%d", (long) now, num_selected));
-
-  if (num_selected > 0 && mgr->ctl[1] != INVALID_SOCKET &&
-      FD_ISSET(mgr->ctl[1], &read_set)) {
-    ns_mgr_handle_ctl_sock(mgr);
-  }
-
-  for (nc = mgr->active_connections; nc != NULL; nc = tmp) {
-    int fd_flags = 0;
-    if (num_selected > 0) {
-      fd_flags = (FD_ISSET(nc->sock, &read_set) ? _NSF_FD_CAN_READ : 0) |
-                 (FD_ISSET(nc->sock, &write_set) ? _NSF_FD_CAN_WRITE : 0) |
-                 (FD_ISSET(nc->sock, &err_set) ? _NSF_FD_ERROR : 0);
-    }
-#ifdef NS_CC3200
-    // CC3200 does not report UDP sockets as writeable.
-    if (nc->flags & NSF_UDP &&
-        (nc->send_mbuf.len > 0 || nc->flags & NSF_CONNECTING)) {
-      fd_flags |= _NSF_FD_CAN_WRITE;
+#ifdef NS_DEV_IO
+    dl_list_for_each(nd,&mgr->devios, struct ns_dev_io, list){
+        if (nd->status == NS_DEV_ST_ACTIVE){
+            if (nd->ev_flags & NS_DEV_EV_READ){
+                ns_add_to_set(nd->fd, &read_set, &max_fd);
+            }
+            if (nd->ev_flags & NS_DEV_EV_WRITE){
+                ns_add_to_set(nd->fd, &write_set, &max_fd);
+            }
+            ns_add_to_set(nd->fd, &err_set, &max_fd);
+        }
     }
 #endif
-    tmp = nc->next;
-    ns_mgr_handle_connection(nc, fd_flags, now);
-  }
 
-  for (nc = mgr->active_connections; nc != NULL; nc = tmp) {
-    tmp = nc->next;
-    if ((nc->flags & NSF_CLOSE_IMMEDIATELY) ||
-        (nc->send_mbuf.len == 0 && (nc->flags & NSF_SEND_AND_CLOSE))) {
-      ns_close_conn(nc);
+    tv.tv_sec = milli / 1000;
+    tv.tv_usec = (milli % 1000) * 1000;
+
+    num_selected = select((int) max_fd + 1, &read_set, &write_set, &err_set, &tv);
+    now = time(NULL);
+    DBG(("select @ %ld num_ev=%d", (long) now, num_selected));
+
+    if (num_selected > 0 && mgr->ctl[1] != INVALID_SOCKET &&
+            FD_ISSET(mgr->ctl[1], &read_set)) {
+        ns_mgr_handle_ctl_sock(mgr);
     }
-  }
 
-  return now;
+    for (nc = mgr->active_connections; nc != NULL; nc = tmp) {
+        int fd_flags = 0;
+        if (num_selected > 0) {
+            fd_flags = (FD_ISSET(nc->sock, &read_set) ? _NSF_FD_CAN_READ : 0) |
+                (FD_ISSET(nc->sock, &write_set) ? _NSF_FD_CAN_WRITE : 0) |
+                (FD_ISSET(nc->sock, &err_set) ? _NSF_FD_ERROR : 0);
+        }
+#ifdef NS_CC3200
+        // CC3200 does not report UDP sockets as writeable.
+        if (nc->flags & NSF_UDP &&
+                (nc->send_mbuf.len > 0 || nc->flags & NSF_CONNECTING)) {
+            fd_flags |= _NSF_FD_CAN_WRITE;
+        }
+#endif
+        tmp = nc->next;
+        ns_mgr_handle_connection(nc, fd_flags, now);
+    }
+
+    for (nc = mgr->active_connections; nc != NULL; nc = tmp) {
+        tmp = nc->next;
+        if ((nc->flags & NSF_CLOSE_IMMEDIATELY) ||
+                (nc->send_mbuf.len == 0 && (nc->flags & NSF_SEND_AND_CLOSE))) {
+            ns_close_conn(nc);
+        }
+    }
+#ifdef NS_DEV_IO
+    /* handle device io */
+    dl_list_for_each_safe(nd, ndtmp, &mgr->devios, struct ns_dev_io, list){
+        int fd_flags = 0;
+        fd_flags = (FD_ISSET(nd->fd, &read_set) ? NS_DEV_EV_READ : 0) |
+            (FD_ISSET(nd->fd, &write_set) ? NS_DEV_EV_WRITE : 0) |
+            (FD_ISSET(nd->fd, &err_set) ? NS_DEV_EV_ERROR : 0);
+        if (fd_flags){
+            ns_mgr_handle_dev_io(nd, fd_flags, now);
+            if (nd->status == NS_DEV_ST_ERROR){
+                /* fixme message output */
+                ns_remove_dev_io(nd);
+            }
+        }
+    }
+#endif
+    return now;
 }
 
 #endif
 
+
 void ns_mgr_poll_loop(struct ns_mgr *mgr) {
-	struct ns_reltime tv, now;
-	int timeout_ms = 0;
-	struct ns_timeout *timeout;
+    struct ns_reltime tv, now;
+    int timeout_ms = 0;
+    struct ns_timeout *timeout;
 
-	while (!mgr->terminate){
-		timeout = dl_list_first(&mgr->timeout, struct ns_timeout, list);
-		if (timeout) {
-			ns_get_reltime(&now);
-			if (ns_reltime_before(&now, &timeout->time))
-				ns_reltime_sub(&timeout->time, &now, &tv);
-			else
-				tv.sec = tv.usec = 0;
-			timeout_ms = tv.sec * 1000 + tv.usec / 1000;
-		}
-		ns_mgr_poll(mgr, timeout_ms);
+    while (!mgr->terminate){
+        timeout = dl_list_first(&mgr->timeout, struct ns_timeout, list);
+        if (timeout) {
+            ns_get_reltime(&now);
+            if (ns_reltime_before(&now, &timeout->time))
+                ns_reltime_sub(&timeout->time, &now, &tv);
+            else
+                tv.sec = tv.usec = 0;
+            timeout_ms = tv.sec * 1000 + tv.usec / 1000;
+        }
+        ns_mgr_poll(mgr, timeout_ms);
 
-		/*
-		 *ns_process_pending_signals();
-		 */
+        /*
+         *ns_process_pending_signals();
+         */
 
-		/* check if some registered timeouts have occurred */
-		timeout = dl_list_first(&mgr->timeout, struct ns_timeout, list);
-		if (timeout) {
-			ns_get_reltime(&now);
-			if (!ns_reltime_before(&now, &timeout->time)) {
-				void *ctx = timeout->ctx;
-				ns_timeout_handler_t handler =
-					timeout->handler;
-				ns_remove_timeout(timeout);
-				handler(mgr, ctx);
-			}
-		}
+        /* check if some registered timeouts have occurred */
+        timeout = dl_list_first(&mgr->timeout, struct ns_timeout, list);
+        if (timeout) {
+            ns_get_reltime(&now);
+            if (!ns_reltime_before(&now, &timeout->time)) {
+                void *ctx = timeout->ctx;
+                ns_timeout_handler_t handler =
+                    timeout->handler;
+                ns_remove_timeout(timeout);
+                handler(mgr, ctx);
+            }
+        }
 
-	}
-	return ;
+    }
+    return ;
 }
 
 /*
@@ -7861,3 +7903,185 @@ int ns_set_protocol_coap(struct ns_connection *nc) {
 }
 
 #endif /* NS_DISABLE_COAP */
+
+#ifdef NS_DEV_IO
+
+#if NS_MGR_EV_MGR == 1 /* epoll() */
+
+#if 0
+static void ns_ev_mgr_epoll_dev_io_set_flags(const struct ns_dev_io *nd,
+        struct epoll_event *ev) {
+    /* NOTE: EPOLLERR and EPOLLHUP are always enabled. */
+    ev->events = 0;
+    if ((nd->recv_mbuf.len < nd->recv_mbuf_limit) && (nd->ev_flags & NS_DEV_EV_READ)) {
+        ev->events |= EPOLLIN;
+    }
+    if ((nd->ev_flags & NS_DEV_EV_WRITE) && (nc->send_mbuf.len > 0 )) {
+        ev->events |= EPOLLOUT;
+    }
+    ev->events |= EPOLLERR;
+}
+
+static void ns_ev_mgr_epoll_dev_io_ctl(struct ns_dev_io *nd, int op) {
+    int epoll_fd = (intptr_t) nd->mgr->mgr_data;
+    struct epoll_event ev;
+    assert(op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD || EPOLL_CTL_DEL);
+    if (op != EPOLL_CTL_DEL) {
+        ns_ev_mgr_epoll_dev_io_set_flags(nd, &ev);
+        if (op == EPOLL_CTL_MOD) {
+            uint32_t old_ev_flags = ns_epf_to_evflags((intptr_t) nc->mgr_data);
+            if (ev.events == old_ev_flags) return;
+        }
+        ev.data.ptr = nd;
+    }
+    if (epoll_ctl(epoll_fd, op, nd->fd, &ev) != 0) {
+        perror("epoll_ctl");
+        abort();
+    }
+}
+#endif
+
+static void ns_ev_mgr_add_dev_io(struct ns_dev_io *nd) {
+    (void) nd;
+    /* ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_ADD); */
+}
+
+static void ns_ev_mgr_remove_dev_io(struct ns_dev_io *nd) {
+    (void) nd;
+    /* ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_DEL); */
+}
+#else
+
+static void ns_ev_mgr_add_dev_io(struct ns_dev_io *nd) {
+    (void) nd;
+}
+
+static void ns_ev_mgr_remove_dev_io(struct ns_dev_io *nd) {
+    (void) nd;
+}
+
+#endif
+
+
+struct ns_dev_io *ns_register_dev_io(struct ns_mgr *mgr, const char *path, int flags,
+        ns_dev_io_handler_t ev_handler, int ev_flags, void *ctx)
+{
+    int fd = -1;
+    struct ns_dev_io *nd = NULL;
+
+    /*
+     *if (((ev_flags & NS_DEV_EV_READ) && !(flags & O_RDONLY)) ||
+     *        ((ev_flags & NS_DEV_EV_WRITE) && !(flags & O_WRONLY))){
+     *    return NULL;
+     *}
+     */
+
+    if (!ev_handler || ((fd = open(path,flags | O_NONBLOCK)) == -1)){
+        return NULL;
+    }else if((nd = NS_MALLOC(sizeof(struct ns_dev_io))) == NULL){
+        close(fd);
+        return NULL;
+    }else{
+        memset(nd, 0, sizeof(struct ns_dev_io));
+        nd->fd = fd;
+        nd->ev_flags = ev_flags;
+        nd->ctx = ctx;
+        nd->mgr = mgr;
+        nd->ev_handler = ev_handler;
+        nd->status = NS_DEV_ST_ACTIVE;
+        nd->recv_mbuf_limit = ~0;
+    }
+    ns_ev_mgr_add_dev_io(nd);
+    dl_list_add_tail(&mgr->devios, &nd->list);
+    return nd;
+}
+
+void ns_remove_dev_io(struct ns_dev_io *nd)
+{
+    if (!nd){
+        return;
+    }
+    ns_ev_mgr_remove_dev_io(nd);
+    dl_list_del(&nd->list);
+    nd->status = NS_DEV_ST_DEACTIVE;
+    close(nd->fd);
+    mbuf_free(&nd->recv_mbuf);
+    mbuf_free(&nd->send_mbuf);
+    NS_FREE(nd);
+}
+
+static size_t dev_io_recv_avail_size(struct ns_dev_io *nd, size_t max) {
+  size_t avail;
+  if (nd->recv_mbuf_limit < nd->recv_mbuf.len) return 0;
+  avail = nd->recv_mbuf_limit - nd->recv_mbuf.len;
+  return avail > max ? max : avail;
+}
+
+static void ns_dev_error(struct ns_dev_io *nd)
+{
+    int n = 0;
+    if (nd->ev_handler != NULL) {
+        DBG(("%p ev=%d", nd, ev));
+        nd->status = NS_DEV_ST_ERROR;
+        nd->ev_handler(nd, NS_DEV_EV_ERROR, &n);
+    }
+    DBG(("dev error callback done, status %d", nd->status));
+}
+
+static void ns_dev_write(struct ns_dev_io *nd)
+{
+    struct mbuf *io = &nd->send_mbuf;
+    int n = 0;
+    assert(io->len > 0);
+
+    n = (int) write(nd->fd, io->buf, io->len);
+
+    if (ns_is_error(n)) {
+        nd->status = NS_DEV_ST_ERROR;
+    }else if (n > 0){
+        DBG(("%p %d bytes -> %d", nd, n, nd->fd));
+        mbuf_remove(io, n);
+    }
+    if (nd->ev_handler != NULL) {
+        DBG(("%p status=%lu ev=%d ev_data=%p", nd, nd->status, ev, n));
+        nd->ev_handler(nd, NS_DEV_EV_WRITE, &n);
+    }
+    DBG(("dev write callback done, status %d", nd->status));
+}
+
+static void ns_dev_read(struct ns_dev_io *nd)
+{
+    char buf[NS_READ_BUFFER_SIZE] = {0};
+    int n = 0;
+    /* fixme read callback invoked */
+    while ((n = (int) read(
+                    nd->fd, buf, dev_io_recv_avail_size(nd, sizeof(buf)))) > 0) {
+        DBG(("%p %d bytes (PLAIN) <- %d", nd, n, nd->fd));
+        mbuf_append(&nd->recv_mbuf, buf, n);
+        if (nd->ev_handler != NULL) {
+            DBG(("%p status=%lu ev=%d ev_data=%p", nd, nd->status, ev, n));
+            nd->ev_handler(nd, NS_DEV_EV_READ, &n);
+        }
+    }
+    DBG(("recv returns %d", n));
+}
+
+static void ns_mgr_handle_dev_io(struct ns_dev_io *nd, int ev_flags, time_t now)
+{
+    DBG(("%p fd=%d ev_flags=%d nd_status=%lu rmbl=%d smbl=%d", nd, nd->fd,
+       ev_flags, nd->status, (int) nd->recv_mbuf.len, (int) nd->send_mbuf.len));
+
+    if (ev_flags != 0) nd->last_io_time = now;
+
+    /* printf("[%s:%d]%p fd %d ev %d \n",__func__, __LINE__, nd, nd->fd, ev_flags); */
+    if (ev_flags & NS_DEV_EV_READ){
+        ns_dev_read(nd);
+    }
+    if (ev_flags & NS_DEV_EV_WRITE){
+        ns_dev_write(nd);
+    }
+    if (ev_flags & NS_DEV_EV_ERROR){
+        ns_dev_error(nd);
+    }
+}
+#endif

@@ -24,6 +24,10 @@
  * All rights reserved
  */
 
+#ifdef NS_DEV_IO
+#define NS_MGR_EV_MGR 0
+#endif
+
 #ifndef OSDEP_HEADER_INCLUDED
 #define OSDEP_HEADER_INCLUDED
 
@@ -815,16 +819,46 @@ struct ns_mgr {
   const char *hexdump_file; /* Debug hexdump file path */
   sock_t ctl[2];            /* Socketpair for mg_wakeup() */
   struct dl_list timeout;   /* timeout handle */
+  struct dl_list devios;
   int terminate;
   void *user_data;          /* User data */
   void *mgr_data;           /* Implementation-specific event manager's data. */
 };
 
-struct ns_timeout;
 typedef void (*ns_timeout_handler_t)(struct ns_mgr *mgr,void *ctx);
 
-struct ns_signal;
 typedef void (*ns_signal_handler_t)(int sig, struct ns_mgr *mgr,void *ctx);
+
+#ifdef NS_DEV_IO
+
+struct ns_dev_io;
+typedef void (*ns_dev_io_handler_t)(struct ns_dev_io *devio, int ev, void *p);
+
+/*
+ * device io
+ */
+#define NS_DEV_EV_READ			(1 << 0)
+#define NS_DEV_EV_WRITE			(1 << 1)
+#define NS_DEV_EV_ERROR			(1 << 2)
+
+#define NS_DEV_ST_DEACTIVE		0
+#define NS_DEV_ST_ACTIVE		1
+#define NS_DEV_ST_ERROR			-1
+
+struct ns_dev_io{
+	int fd;
+	unsigned int ev_flags;
+	int status;
+	time_t last_io_time;              /* Timestamp of the last socket IO */
+	size_t recv_mbuf_limit;  /* Max size of recv buffer */
+	struct ns_mgr *mgr;
+	struct mbuf recv_mbuf;   /* Received data */
+	struct mbuf send_mbuf;   /* Data scheduled for sending */
+	void *ctx;              /* User-specific data */
+	ns_dev_io_handler_t ev_handler;
+	struct dl_list list;
+};
+#endif
 
 /*
  *Timeout
@@ -934,13 +968,19 @@ void ns_mgr_poll_loop(struct ns_mgr *);
  * register timer for mgr_poll_loop. handler will be invoked when it's timeout.
  */
 struct ns_timeout *ns_register_timeout(unsigned int secs, unsigned int usecs,
-			   ns_timeout_handler_t handler,
-			   struct ns_mgr *mgr, void *ctx);
+			ns_timeout_handler_t handler,struct ns_mgr *mgr, void *ctx);
 
 /*
  * cancel registered timer for mgr_poll_loop
  */
 void ns_remove_timeout(struct ns_timeout *timeout);
+
+#ifdef NS_DEV_IO
+struct ns_dev_io *ns_register_dev_io(struct ns_mgr *mgr, const char *path,
+			int flags, ns_dev_io_handler_t ev_handler, int ev, void *ctx);
+
+void ns_remove_dev_io(struct ns_dev_io *dev_io);
+#endif
 
 /*
  * Pass a message of a given length to all connections.

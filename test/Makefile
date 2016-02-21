@@ -1,5 +1,5 @@
 SOURCES=unit_test.c test_util.c ../fossa.c
-CFLAGS = -W -Wall -I../.. -pthread -DNS_ENABLE_COAP -DNS_ENABLE_IPV6 -DNS_ENABLE_THREADS -DNS_ENABLE_MQTT_BROKER -DNS_ENABLE_DNS_SERVER \
+CFLAGS = -W -Wall -I../.. -pthread -DNS_ENABLE_COAP -DNS_ENABLE_IPV6 -DNS_ENABLE_THREADS -DNS_ENABLE_MQTT_BROKER -DNS_ENABLE_DNS_SERVER -DNS_DEV_IO \
 	       -DNS_INTERNAL="" -DNS_MODULE_LINES -include unit_test.h -DNS_MALLOC=test_malloc -DNS_CALLOC=test_calloc -lssl -lrt $(CFLAGS_EXTRA)
 
 all: test
