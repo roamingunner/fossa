@@ -9,7 +9,7 @@ X = $(SUBDIRS)
 all: $(SUBDIRS)
 
 $(SUBDIRS):
-	@$(MAKE) -C $@ CFLAGS_EXTRA=-lrt
+	@$(MAKE) -C $@ CFLAGS_EXTRA="-lrt -g"
 
 clean:
 	for d in $(SUBDIRS) ; do $(MAKE) -C $$d clean ; done

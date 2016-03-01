@@ -17,6 +17,7 @@ static void ns_timeout_handler(struct ns_mgr *mgr, void *ctx) {
         printf("LOOP %d:write test msg\n",loop);
         /* WARNING: just for test, not recommend call block funcion !!*/
         system("echo abcde12345 > /tmp/read_fifo");
+        ns_register_timeout(0,500000,ns_timeout_handler, mgr,NULL);
     }else{
         ns_mgr_poll_loop_stop(mgr);
     }
@@ -43,6 +44,7 @@ int main(int argc, char* argv[]) {
     int private_data = 9;
 
     unlink("/tmp/read_fifo");
+    mkfifo("/tmp/read_fifo",0666);
     ns_mgr_init(&mgr, NULL);
 
     nd = ns_register_dev_io(&mgr, "/tmp/read_fifo", O_RDWR , ns_dev_io_cb, NS_DEV_EV_READ, &private_data);

@@ -3198,7 +3198,7 @@ static void ns_timeout_cancel_cb1(struct ns_mgr *mgr, void *ctx) {
 static void ns_timeout_cancel_cb2(struct ns_mgr *mgr, void *ctx) {
   struct ns_reltime *now  = (struct ns_reltime *)ctx;
   ns_get_reltime(now);
-  mgr->terminate = 1;
+  ns_mgr_poll_loop_stop(mgr);
   return;
 }
 
@@ -3233,7 +3233,6 @@ static const char *test_ns_timeout_remove(void){
 }
 
 #ifdef NS_DEV_IO
-#if NS_MGR_EV_MGR == 0 /* select() */
 
 #define NS_DEV_TEST_MSG  "abcde12345"
 
@@ -3302,7 +3301,6 @@ static const char *test_ns_dev_io(void)
   return NULL;
 }
 
-#endif
 #endif
 
 static const char *run_tests(const char *filter, double *total_elapsed) {
@@ -3384,9 +3382,7 @@ static const char *run_tests(const char *filter, double *total_elapsed) {
   RUN_TEST(test_ns_timeout_remove);
 
 #ifdef NS_DEV_IO
-#if NS_MGR_EV_MGR == 0 /* select() */
   RUN_TEST(test_ns_dev_io);
-#endif
 #endif
   return NULL;
 }
