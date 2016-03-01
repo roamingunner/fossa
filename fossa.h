@@ -24,10 +24,6 @@
  * All rights reserved
  */
 
-#ifdef NS_DEV_IO
-#define NS_MGR_EV_MGR 0
-#endif
-
 #ifndef OSDEP_HEADER_INCLUDED
 #define OSDEP_HEADER_INCLUDED
 
@@ -830,6 +826,11 @@ typedef void (*ns_timeout_handler_t)(struct ns_mgr *mgr,void *ctx);
 typedef void (*ns_signal_handler_t)(int sig, struct ns_mgr *mgr,void *ctx);
 
 #ifdef NS_DEV_IO
+enum ns_inner_type {
+  NS_INNER_T_UNKNOWN = 0,
+  NS_INNER_T_CONNECTION = 1,
+  NS_INNER_T_DEV_IO = 2
+};
 
 struct ns_dev_io;
 typedef void (*ns_dev_io_handler_t)(struct ns_dev_io *devio, int ev, void *p);
@@ -846,6 +847,7 @@ typedef void (*ns_dev_io_handler_t)(struct ns_dev_io *devio, int ev, void *p);
 #define NS_DEV_ST_ERROR			-1
 
 struct ns_dev_io{
+	enum ns_inner_type ns_type;
 	int fd;
 	unsigned int ev_flags;
 	int status;
@@ -886,6 +888,9 @@ struct ns_signal{
  * Fossa connection.
  */
 struct ns_connection {
+#ifdef NS_DEV_IO
+  enum ns_inner_type ns_type;
+#endif
   struct ns_connection *next, *prev; /* ns_mgr::active_connections linkage */
   struct ns_connection *listener;    /* Set only for accept()-ed connections */
   struct ns_mgr *mgr;                /* Pointer to containing manager */
@@ -962,7 +967,8 @@ time_t ns_mgr_poll(struct ns_mgr *, int milli);
  * It will stop when mgr->terminate is true.
  */
 void ns_mgr_poll_loop(struct ns_mgr *);
-
+int ns_mgr_poll_loop_stoped(struct ns_mgr *mgr);
+void ns_mgr_poll_loop_stop(struct ns_mgr *mgr);
 
 /*
  * register timer for mgr_poll_loop. handler will be invoked when it's timeout.

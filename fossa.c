@@ -92,10 +92,6 @@ NS_INTERNAL size_t ns_handle_chunked(struct ns_connection *nc,
                                      struct http_message *hm, char *buf,
                                      size_t blen);
 
-#ifdef NS_DEV_IO
-static void ns_mgr_handle_dev_io(struct ns_dev_io *nd, int ev_flags, time_t now);
-#endif
-
 /* Forward declarations for testing. */
 extern void *(*test_malloc)(size_t);
 extern void *(*test_calloc)(size_t, size_t);
@@ -106,6 +102,12 @@ extern void *(*test_calloc)(size_t, size_t);
 /**/
 #endif
 
+#ifdef NS_DEV_IO
+static void ns_mgr_handle_dev_io(struct ns_dev_io *nd, int ev_flags, time_t now);
+static void ns_ev_mgr_add_dev_io(struct ns_dev_io *nd);
+static void ns_ev_mgr_remove_dev_io(struct ns_dev_io *nd);
+static void ns_ev_mgr_epoll_dev_io_ctl(struct ns_dev_io *nd, int op);
+#endif
 
 struct ns_timeout *ns_register_timeout(unsigned int secs, unsigned int usecs,
 			   ns_timeout_handler_t handler,
@@ -1811,7 +1813,9 @@ void ns_mgr_free(struct ns_mgr *s) {
     struct ns_connection *conn, *tmp_conn;
     struct ns_timeout *timeout, *prev;
     struct ns_reltime now;
+#ifdef NS_DEV_IO
     struct ns_dev_io *nd, *tmp_nd;
+#endif
 
     DBG(("%p", s));
     if (s == NULL) return;
@@ -1974,6 +1978,10 @@ NS_INTERNAL struct ns_connection *ns_create_connection(
 
   if ((conn = (struct ns_connection *) NS_MALLOC(sizeof(*conn))) != NULL) {
     memset(conn, 0, sizeof(*conn));
+#ifdef NS_DEV_IO
+    conn->ns_type = NS_INNER_T_CONNECTION;
+#endif
+    conn->sock = INVALID_SOCKET;
     conn->sock = INVALID_SOCKET;
     conn->handler = callback;
     conn->mgr = mgr;
@@ -2677,20 +2685,43 @@ time_t ns_mgr_poll(struct ns_mgr *mgr, int timeout_ms) {
   DBG(("epoll_wait @ %ld num_ev=%d", (long) now, num_ev));
 
   while (num_ev-- > 0) {
-    intptr_t epf;
     struct epoll_event *ev = events + num_ev;
-    nc = (struct ns_connection *) ev->data.ptr;
-    if (nc == NULL) {
-      ns_mgr_handle_ctl_sock(mgr);
-      continue;
+    intptr_t epf;
+#ifdef NS_DEV_IO
+    enum ns_inner_type *ns_type = ev->data.ptr;
+    if (*ns_type == NS_INNER_T_UNKNOWN){
+      abort();
+    }else if(*ns_type == NS_INNER_T_DEV_IO){
+      struct ns_dev_io *nd = (struct ns_dev_io *) ev->data.ptr;
+      fd_flags = ((ev->events & (EPOLLIN | EPOLLHUP)) ? NS_DEV_EV_READ : 0) |
+                 ((ev->events & (EPOLLOUT)) ? NS_DEV_EV_WRITE : 0) |
+                 ((ev->events & (EPOLLERR)) ? NS_DEV_EV_ERROR : 0);
+      if (fd_flags){
+        ns_mgr_handle_dev_io(nd, fd_flags, now);
+        if (nd->status == NS_DEV_ST_ERROR){
+          /* fixme warning output */
+          ns_remove_dev_io(nd);
+        }else{
+          ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_MOD);
+        }
+      }
+    }else
+#endif
+    {
+      nc = (struct ns_connection *) ev->data.ptr;
+      if (nc == NULL) {
+        ns_mgr_handle_ctl_sock(mgr);
+        continue;
+      }
+      fd_flags = ((ev->events & (EPOLLIN | EPOLLHUP)) ? _NSF_FD_CAN_READ : 0) |
+                 ((ev->events & (EPOLLOUT)) ? _NSF_FD_CAN_WRITE : 0) |
+                 ((ev->events & (EPOLLERR)) ? _NSF_FD_ERROR : 0);
+      ns_mgr_handle_connection(nc, fd_flags, now);
+      epf = (intptr_t) nc->mgr_data;
+      epf ^= _NS_EPF_NO_POLL;
+      nc->mgr_data = (void *) epf;
     }
-    fd_flags = ((ev->events & (EPOLLIN | EPOLLHUP)) ? _NSF_FD_CAN_READ : 0) |
-               ((ev->events & (EPOLLOUT)) ? _NSF_FD_CAN_WRITE : 0) |
-               ((ev->events & (EPOLLERR)) ? _NSF_FD_ERROR : 0);
-    ns_mgr_handle_connection(nc, fd_flags, now);
-    epf = (intptr_t) nc->mgr_data;
-    epf ^= _NS_EPF_NO_POLL;
-    nc->mgr_data = (void *) epf;
+
   }
 
   for (nc = mgr->active_connections; nc != NULL; nc = next) {
@@ -2832,7 +2863,7 @@ time_t ns_mgr_poll(struct ns_mgr *mgr, int milli) {
         if (fd_flags){
             ns_mgr_handle_dev_io(nd, fd_flags, now);
             if (nd->status == NS_DEV_ST_ERROR){
-                /* fixme message output */
+                /* fixme warning output */
                 ns_remove_dev_io(nd);
             }
         }
@@ -2843,6 +2874,19 @@ time_t ns_mgr_poll(struct ns_mgr *mgr, int milli) {
 
 #endif
 
+int ns_mgr_poll_loop_stoped(struct ns_mgr *mgr){
+    if (mgr){
+        return mgr->terminate;
+    }else{
+        return -1;
+    }
+}
+
+void ns_mgr_poll_loop_stop(struct ns_mgr *mgr) {
+    if (mgr){
+        mgr->terminate = 1;
+    }
+}
 
 void ns_mgr_poll_loop(struct ns_mgr *mgr) {
     struct ns_reltime tv, now;
@@ -7908,15 +7952,13 @@ int ns_set_protocol_coap(struct ns_connection *nc) {
 
 #if NS_MGR_EV_MGR == 1 /* epoll() */
 
-#if 0
-static void ns_ev_mgr_epoll_dev_io_set_flags(const struct ns_dev_io *nd,
-        struct epoll_event *ev) {
+static void ns_ev_mgr_epoll_dev_io_set_flags(const struct ns_dev_io *nd, struct epoll_event *ev) {
     /* NOTE: EPOLLERR and EPOLLHUP are always enabled. */
     ev->events = 0;
     if ((nd->recv_mbuf.len < nd->recv_mbuf_limit) && (nd->ev_flags & NS_DEV_EV_READ)) {
         ev->events |= EPOLLIN;
     }
-    if ((nd->ev_flags & NS_DEV_EV_WRITE) && (nc->send_mbuf.len > 0 )) {
+    if ((nd->ev_flags & NS_DEV_EV_WRITE) && (nd->send_mbuf.len > 0 )) {
         ev->events |= EPOLLOUT;
     }
     ev->events |= EPOLLERR;
@@ -7928,10 +7970,6 @@ static void ns_ev_mgr_epoll_dev_io_ctl(struct ns_dev_io *nd, int op) {
     assert(op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD || EPOLL_CTL_DEL);
     if (op != EPOLL_CTL_DEL) {
         ns_ev_mgr_epoll_dev_io_set_flags(nd, &ev);
-        if (op == EPOLL_CTL_MOD) {
-            uint32_t old_ev_flags = ns_epf_to_evflags((intptr_t) nc->mgr_data);
-            if (ev.events == old_ev_flags) return;
-        }
         ev.data.ptr = nd;
     }
     if (epoll_ctl(epoll_fd, op, nd->fd, &ev) != 0) {
@@ -7939,16 +7977,13 @@ static void ns_ev_mgr_epoll_dev_io_ctl(struct ns_dev_io *nd, int op) {
         abort();
     }
 }
-#endif
 
 static void ns_ev_mgr_add_dev_io(struct ns_dev_io *nd) {
-    (void) nd;
-    /* ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_ADD); */
+    ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_ADD);
 }
 
 static void ns_ev_mgr_remove_dev_io(struct ns_dev_io *nd) {
-    (void) nd;
-    /* ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_DEL); */
+    ns_ev_mgr_epoll_dev_io_ctl(nd, EPOLL_CTL_DEL);
 }
 #else
 
@@ -7983,6 +8018,7 @@ struct ns_dev_io *ns_register_dev_io(struct ns_mgr *mgr, const char *path, int f
         return NULL;
     }else{
         memset(nd, 0, sizeof(struct ns_dev_io));
+        nd->ns_type = NS_INNER_T_DEV_IO;
         nd->fd = fd;
         nd->ev_flags = ev_flags;
         nd->ctx = ctx;
