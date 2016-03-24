@@ -44,6 +44,10 @@
 #define NS_INTERNAL static
 #endif
 
+#ifndef NS_MGR_POLL_LOOP_DEFAULT_TIMEOUT
+#define NS_MGR_POLL_LOOP_DEFAULT_TIMEOUT        1000
+#endif
+
 #if !defined(NS_MGR_EV_MGR) && defined(__linux__)
 #define NS_MGR_EV_MGR 1 /* epoll() */
 #endif
@@ -2903,6 +2907,7 @@ void ns_mgr_poll_loop(struct ns_mgr *mgr) {
                 tv.sec = tv.usec = 0;
             timeout_ms = tv.sec * 1000 + tv.usec / 1000;
         }
+        timeout_ms = (timeout_ms > 0) ? timeout_ms : NS_MGR_POLL_LOOP_DEFAULT_TIMEOUT;
         ns_mgr_poll(mgr, timeout_ms);
 
         /*
