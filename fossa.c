@@ -2918,7 +2918,7 @@ void ns_mgr_poll_loop(struct ns_mgr *mgr) {
                 ns_timeout_handler_t handler =
                     timeout->handler;
                 ns_remove_timeout(timeout);
-                handler(mgr, ctx);
+                handler(timeout, mgr, ctx);
             }
         }
 

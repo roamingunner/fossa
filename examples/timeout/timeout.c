@@ -9,7 +9,7 @@
 
 #define TEST_LOOP 5
 
-static void ns_timeout_handler(struct ns_mgr *mgr, void *ctx) {
+static void ns_timeout_handler(struct ns_timeout *to, struct ns_mgr *mgr, void *ctx) {
   static int loop = 0;
   loop++;
   printf("timeout handler invoked @ loop %d\n",loop);

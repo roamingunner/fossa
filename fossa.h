@@ -821,7 +821,8 @@ struct ns_mgr {
   void *mgr_data;           /* Implementation-specific event manager's data. */
 };
 
-typedef void (*ns_timeout_handler_t)(struct ns_mgr *mgr,void *ctx);
+struct ns_timeout;
+typedef void (*ns_timeout_handler_t)(struct ns_timeout *to, struct ns_mgr *mgr,void *ctx);
 
 typedef void (*ns_signal_handler_t)(int sig, struct ns_mgr *mgr,void *ctx);
 

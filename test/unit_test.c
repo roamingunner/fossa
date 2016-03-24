@@ -3161,7 +3161,7 @@ static const char *test_strcmp(void) {
   return NULL;
 }
 
-static void ns_timeout_cb(struct ns_mgr *mgr, void *ctx) {
+static void ns_timeout_cb(struct ns_timeout *to, struct ns_mgr *mgr, void *ctx) {
   struct ns_reltime *now  = (struct ns_reltime *)ctx;
   ns_get_reltime(now);
   mgr->terminate = 1;
@@ -3189,13 +3189,13 @@ static const char *test_ns_timeout(void){
   return NULL;
 }
 
-static void ns_timeout_cancel_cb1(struct ns_mgr *mgr, void *ctx) {
+static void ns_timeout_cancel_cb1(struct ns_timeout *to, struct ns_mgr *mgr, void *ctx) {
   struct ns_reltime *now  = (struct ns_reltime *)ctx;
   ns_get_reltime(now);
   return;
 }
 
-static void ns_timeout_cancel_cb2(struct ns_mgr *mgr, void *ctx) {
+static void ns_timeout_cancel_cb2(struct ns_timeout *to, struct ns_mgr *mgr, void *ctx) {
   struct ns_reltime *now  = (struct ns_reltime *)ctx;
   ns_get_reltime(now);
   ns_mgr_poll_loop_stop(mgr);
