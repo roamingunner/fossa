@@ -3180,7 +3180,7 @@ static const char *test_ns_timeout(void){
   ns_mgr_poll_loop(&mgr);
   ns_reltime_sub(&end,&start,&diff);
 
-  if (diff.sec == 1 && (diff.usec < 510000 || diff.usec > 490000)){
+  if (diff.sec == 1 && (diff.usec < 550000 || diff.usec > 450000)){
       pass = 1;
   }
   ASSERT_EQ(pass, 1);

@@ -45,7 +45,7 @@
 #endif
 
 #ifndef NS_MGR_POLL_LOOP_DEFAULT_TIMEOUT
-#define NS_MGR_POLL_LOOP_DEFAULT_TIMEOUT        1000
+#define NS_MGR_POLL_LOOP_DEFAULT_TIMEOUT        500
 #endif
 
 #if !defined(NS_MGR_EV_MGR) && defined(__linux__)
